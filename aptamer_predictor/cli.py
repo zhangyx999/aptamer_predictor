@@ -7,7 +7,7 @@ import csv
 import json
 import os
 import sys
-from typing import Dict, List, Optional
+from typing import Optional
 
 import numpy as np
 
@@ -61,7 +61,8 @@ def cmd_predict(args):
             prob = model.predict_proba(feat.reshape(1, -1))[0, 1]
             label_str = "Binding" if pred == 1 else "Non-binding"
             print(f"  {fname:40s}  {label_str:12s}  P={prob:.4f}")
-            individual[fname] = {"label": int(pred), "probability": round(float(prob), 6)}
+            individual[fname] = {"label": int(
+                pred), "probability": round(float(prob), 6)}
             ensemble_probs.append(float(prob))
 
         avg = float(np.mean(ensemble_probs))
@@ -84,7 +85,8 @@ def cmd_predict(args):
     if args.input:
         input_path = args.input
         if not os.path.isfile(input_path):
-            print(f"Error: input file not found: {input_path}", file=sys.stderr)
+            print(
+                f"Error: input file not found: {input_path}", file=sys.stderr)
             sys.exit(1)
 
         # Detect CSV format by reading header
@@ -94,10 +96,13 @@ def cmd_predict(args):
 
         # Flexible column detection
         header_lower = [h.strip().lower() for h in header]
-        seq_col = _find_col(header_lower, ["aptamer", "sequence", "seq", "aptamer sequence"])
+        seq_col = _find_col(
+            header_lower, ["aptamer", "sequence", "seq", "aptamer sequence"])
         smi_col = _find_col(header_lower, ["smiles"])
-        label_col = _find_col(header_lower, ["label", "true_label", "true label"])
-        id_col = _find_col(header_lower, ["id", "pubchem_id", "pubchem id", "pubchemid"])
+        label_col = _find_col(
+            header_lower, ["label", "true_label", "true label"])
+        id_col = _find_col(
+            header_lower, ["id", "pubchem_id", "pubchem id", "pubchemid"])
 
         if seq_col is None or smi_col is None:
             print(
@@ -123,7 +128,8 @@ def cmd_predict(args):
                     continue
                 sequences.append(row[seq_col])
                 smiles_list.append(row[smi_col])
-                labels.append(int(row[label_col]) if label_col is not None and row[label_col] else None)
+                labels.append(
+                    int(row[label_col]) if label_col is not None and row[label_col] else None)
                 ids.append(row[id_col] if id_col is not None else None)
 
         print(f"Total samples: {len(sequences)}\n")
@@ -195,7 +201,8 @@ def cmd_extract_aptamer(args):
         # Try to find sequence columns
         seq_col = _find_col(
             [h.strip().lower() for h in header],
-            ["aptamer seqtence(u-t)", "dna sequence", "aptamer sequence", "sequence", "seq"]
+            ["aptamer seqtence(u-t)", "dna sequence",
+             "aptamer sequence", "sequence", "seq"]
         )
         if seq_col is None:
             seq_col = 1 if len(header) > 1 else 0
@@ -218,7 +225,8 @@ def cmd_extract_aptamer(args):
         writer.writerow(header_fields)
         writer.writerows(rows_out)
 
-    print(f"Output: {output_path}  ({len(rows_out)} sequences, {len(kmer_names)} features)")
+    print(
+        f"Output: {output_path}  ({len(rows_out)} sequences, {len(kmer_names)} features)")
 
 
 def cmd_extract_molecule(args):
@@ -275,7 +283,8 @@ def cmd_extract_molecule(args):
         writer.writerow(out_header)
         writer.writerows(rows_out)
 
-    print(f"Output: {output_path}  ({len(rows_out)} molecules, {len(desc_names)} descriptors)")
+    print(
+        f"Output: {output_path}  ({len(rows_out)} molecules, {len(desc_names)} descriptors)")
 
 
 # ---------------------------------------------------------------------------
@@ -333,28 +342,38 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
     # --- predict ---
-    p_pred = sub.add_parser("predict", help="Predict aptamer-small molecule interactions")
-    p_pred.add_argument("--aptamer", help="Single aptamer sequence (RNA or DNA)")
+    p_pred = sub.add_parser(
+        "predict", help="Predict aptamer-small molecule interactions")
+    p_pred.add_argument(
+        "--aptamer", help="Single aptamer sequence (RNA or DNA)")
     p_pred.add_argument("--smiles", help="Single SMILES string")
-    p_pred.add_argument("--input", "-i", help="Input CSV file for batch prediction")
+    p_pred.add_argument(
+        "--input", "-i", help="Input CSV file for batch prediction")
     p_pred.add_argument("--output", "-o", help="Output file path")
 
     # --- evaluate ---
-    p_eval = sub.add_parser("evaluate", help="Evaluate models on pre-formatted test data")
-    p_eval.add_argument("--data-dir", required=True, help="Directory with test CSV files")
-    p_eval.add_argument("--output-dir", default="./predictions", help="Output directory")
+    p_eval = sub.add_parser(
+        "evaluate", help="Evaluate models on pre-formatted test data")
+    p_eval.add_argument("--data-dir", required=True,
+                        help="Directory with test CSV files")
+    p_eval.add_argument(
+        "--output-dir", default="./predictions", help="Output directory")
 
     # --- extract-aptamer ---
-    p_ext_a = sub.add_parser("extract-aptamer", help="Extract k-mer features from aptamer sequences")
+    p_ext_a = sub.add_parser(
+        "extract-aptamer", help="Extract k-mer features from aptamer sequences")
     p_ext_a.add_argument("--input", "-i", required=True, help="Input CSV file")
-    p_ext_a.add_argument("--output", "-o", required=True, help="Output CSV file")
+    p_ext_a.add_argument("--output", "-o", required=True,
+                         help="Output CSV file")
     p_ext_a.add_argument("--k", type=int, nargs="+", default=[1, 2, 3, 4],
                          help="k values for k-mer extraction (default: 1 2 3 4)")
 
     # --- extract-molecule ---
-    p_ext_m = sub.add_parser("extract-molecule", help="Extract molecular descriptors from SMILES")
+    p_ext_m = sub.add_parser(
+        "extract-molecule", help="Extract molecular descriptors from SMILES")
     p_ext_m.add_argument("--input", "-i", required=True, help="Input CSV file")
-    p_ext_m.add_argument("--output", "-o", required=True, help="Output CSV file")
+    p_ext_m.add_argument("--output", "-o", required=True,
+                         help="Output CSV file")
 
     return parser
 

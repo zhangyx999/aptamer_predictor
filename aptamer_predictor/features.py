@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from itertools import product
-from typing import List
 
 import numpy as np
 from rdkit import Chem
@@ -39,7 +38,7 @@ def kmer_frequency(sequence: str, k: int) -> list[float]:
     # Count occurrences
     counts = {km: 0 for km in all_kmers}
     for i in range(n_kmers):
-        sub = sequence[i : i + k]
+        sub = sequence[i: i + k]
         if sub in counts:
             counts[sub] += 1
 

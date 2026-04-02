@@ -6,7 +6,7 @@ import glob
 import os
 import pickle
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Optional
 
 import numpy as np
 
@@ -16,6 +16,7 @@ import numpy as np
 
 _TORCH_AVAILABLE = False
 _nn = None
+
 
 def _ensure_torch():
     global _TORCH_AVAILABLE, _nn
