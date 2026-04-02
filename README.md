@@ -16,6 +16,7 @@ Small molecule SMILES ──→ 209 RDKit descriptors ──┘
 
 ```bash
 conda create -n aptamer-pred python=3.9 -y
+conda deactivate （if base is activated）
 conda activate aptamer-pred
 ```
 
