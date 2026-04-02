@@ -21,10 +21,10 @@ def _resolve_model_dir(args_model_dir: Optional[str]) -> str:
     if env_dir:
         return os.path.abspath(env_dir)
 
-    # Default: Ensemble model(pkl) next to this package
+    # Default: models/ next to this package
     pkg_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(pkg_dir)
-    return os.path.join(project_root, "Ensemble model(pkl)")
+    return os.path.join(project_root, "models")
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +336,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model-dir", default=None,
         help="Path to directory containing .pkl model files "
-             "(default: Ensemble model(pkl)/)",
+             "(default: models/)",
     )
 
     sub = parser.add_subparsers(dest="command", help="Available commands")
