@@ -51,7 +51,7 @@ def cmd_predict(args):
         print(f"SMILES   : {smi[:60]}{'...' if len(smi)>60 else ''}\n")
 
         individual = {}
-        ensemble_probs = []
+        labels = []
 
         for model, mer, fname in predictor.models:
             if mer is None or mer not in MER_K_MAP:
@@ -63,20 +63,20 @@ def cmd_predict(args):
             print(f"  {fname:40s}  {label_str:12s}  P={prob:.4f}")
             individual[fname] = {"label": int(
                 pred), "probability": round(float(prob), 6)}
-            ensemble_probs.append(float(prob))
+            labels.append(int(pred))
 
-        avg = float(np.mean(ensemble_probs))
-        ens_label = "Binding" if avg >= 0.5 else "Non-binding"
-        print(f"\n  {'Ensemble':40s}  {ens_label:12s}  P={avg:.4f}")
+        # Ensemble label: Binding only if all 9 models predict Binding, otherwise Non-binding
+        ens_label = "Binding" if all(label == 1 for label in labels) else "Non-binding"
+        print(f"\n  {'Ensemble':40s}  {ens_label:12s}")
 
         if args.output:
+            os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
             with open(args.output, "w") as f:
                 json.dump({
                     "sequence": seq,
                     "smiles": smi,
                     "individual": individual,
-                    "ensemble_label": int(avg >= 0.5),
-                    "ensemble_probability": round(avg, 6),
+                    "ensemble_label": 1 if all(label == 1 for label in labels) else 0,
                 }, f, indent=2, ensure_ascii=False)
             print(f"\nResult saved to {args.output}")
         return
@@ -120,17 +120,27 @@ def cmd_predict(args):
 
         # Read data
         sequences, smiles_list, labels, ids = [], [], [], []
+        skipped = 0
         with open(input_path, "r") as f:
             reader = csv.reader(f)
             next(reader)  # skip header
             for row in reader:
                 if len(row) <= max(seq_col, smi_col):
+                    skipped += 1
                     continue
-                sequences.append(row[seq_col])
-                smiles_list.append(row[smi_col])
+                seq_val = row[seq_col].strip()
+                smi_val = row[smi_col].strip()
+                if not seq_val or not smi_val:
+                    skipped += 1
+                    continue
+                sequences.append(seq_val)
+                smiles_list.append(smi_val)
                 labels.append(
                     int(row[label_col]) if label_col is not None and row[label_col] else None)
                 ids.append(row[id_col] if id_col is not None else None)
+
+        if skipped:
+            print(f"Skipped {skipped} empty row(s).\n")
 
         print(f"Total samples: {len(sequences)}\n")
 
@@ -302,26 +312,16 @@ def _find_col(header_lower: list[str], candidates: list[str]) -> int | None:
 
 def _write_batch_results(results: list[dict], output_path: str):
     """Write batch prediction results to CSV."""
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "sequence", "smiles",
-            "ensemble_label", "ensemble_probability",
-            "true_label",
-        ])
+        writer.writerow(["sequence", "smiles", "ensemble_label"])
         for r in results:
             writer.writerow([
                 r.get("sequence", ""),
                 r.get("smiles", ""),
                 r.get("ensemble_label", ""),
-                r.get("ensemble_probability", ""),
-                r.get("true_label", ""),
             ])
-
-    # Also write detailed JSON
-    json_path = output_path.rsplit(".", 1)[0] + "_detail.json"
-    with open(json_path, "w") as f:
-        json.dump(results, f, indent=2, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------

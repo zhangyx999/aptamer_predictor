@@ -154,36 +154,36 @@ class EnsemblePredictor:
 
     # ---- single sample ---------------------------------------------------
 
-    def predict_one(self, feature_vector: np.ndarray) -> dict:
-        """Predict with all models on a single feature vector.
+    def predict_one(self, sequence: str, smiles: str) -> dict:
+        """Predict with all models on a single aptamer-SMILES pair.
 
         Args:
-            feature_vector: 1-D array of shape (n_features,) — already built
-                            with the correct k-mer combination for each model.
+            sequence: Aptamer sequence (RNA or DNA).
+            smiles: Small molecule SMILES string.
 
         Returns:
-            dict with keys: individual (dict of model->pred), ensemble_label, ensemble_prob
+            dict with keys: individual (dict of model->pred), ensemble_label
         """
-        from aptamer_predictor.features import MER_K_MAP
+        from aptamer_predictor.features import MER_K_MAP, build_feature_vector
 
         results = {}
-        probs = []
+        model_labels = []
 
         for model, mer, fname in self.models:
-            # Build the appropriate feature vector for this model's k-mer set
-            # (caller should pass the raw features; we'll select per model below)
-            pred = model.predict(feature_vector.reshape(1, -1))[0]
-            prob = model.predict_proba(feature_vector.reshape(1, -1))[0, 1]
+            if mer is None or mer not in MER_K_MAP:
+                continue
+            feat = build_feature_vector(sequence, smiles, MER_K_MAP[mer])
+            pred = model.predict(feat.reshape(1, -1))[0]
+            prob = model.predict_proba(feat.reshape(1, -1))[0, 1]
             results[fname] = {"label": int(pred), "probability": float(prob)}
-            probs.append(float(prob))
+            model_labels.append(int(pred))
 
-        avg_prob = np.mean(probs)
-        ensemble_label = int(avg_prob >= 0.5)
+        # Ensemble label: 1 only if all 9 models predict 1, otherwise 0
+        ensemble_label = 1 if all(label == 1 for label in model_labels) else 0
 
         return {
             "individual": results,
             "ensemble_label": ensemble_label,
-            "ensemble_probability": float(avg_prob),
         }
 
     # ---- batch prediction with raw aptamer + SMILES ----------------------
@@ -221,7 +221,7 @@ class EnsemblePredictor:
                 sample["true_label"] = labels[i]
 
             individual = {}
-            ensemble_probs = []
+            model_labels = []
 
             for model, mer, fname in self.models:
                 if mer is None or mer not in MER_K_MAP:
@@ -236,14 +236,13 @@ class EnsemblePredictor:
                     "label": int(pred),
                     "probability": round(float(prob), 6),
                 }
-                ensemble_probs.append(float(prob))
+                model_labels.append(int(pred))
 
-            avg_prob = float(np.mean(ensemble_probs))
-            ensemble_label = int(avg_prob >= 0.5)
+            # Ensemble label: 1 only if all 9 models predict 1, otherwise 0
+            ensemble_label = 1 if all(label == 1 for label in model_labels) else 0
 
             sample["individual"] = individual
             sample["ensemble_label"] = ensemble_label
-            sample["ensemble_probability"] = round(avg_prob, 6)
             all_results.append(sample)
 
             if (i + 1) % 50 == 0 or i == len(sequences) - 1:

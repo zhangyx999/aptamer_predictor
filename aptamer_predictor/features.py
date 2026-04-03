@@ -124,4 +124,8 @@ def build_feature_vector(sequence: str, smiles: str, k_list: list[int]) -> np.nd
     """
     kmer = kmer_features(sequence, k_list)
     desc = molecular_descriptors(smiles)
-    return np.array(kmer + desc, dtype=np.float64)
+    vec = np.array(kmer + desc, dtype=np.float64)
+    # Replace NaN with 0 (matches original pipeline: "non" → "0")
+    # This is critical for PyTorch RNN/biRNN models which propagate NaN
+    vec = np.nan_to_num(vec, nan=0.0)
+    return vec
