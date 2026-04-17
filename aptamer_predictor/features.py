@@ -8,6 +8,8 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 
+from aptamer_predictor.descriptor_schema import TRAINING_DESCRIPTOR_NAMES
+
 
 # ---------------------------------------------------------------------------
 # Aptamer k-mer features
@@ -62,9 +64,21 @@ def kmer_features(sequence: str, k_list: list[int]) -> list[float]:
 # Molecular descriptors
 # ---------------------------------------------------------------------------
 
-# Pre-compute descriptor list with Ipc excluded (210 - 1 = 209 descriptors)
+_DESCRIPTOR_FUNC_BY_NAME = dict(Descriptors.descList)
+_MISSING_DESCRIPTOR_NAMES = [
+    name for name in TRAINING_DESCRIPTOR_NAMES if name not in _DESCRIPTOR_FUNC_BY_NAME
+]
+if _MISSING_DESCRIPTOR_NAMES:
+    missing = ", ".join(_MISSING_DESCRIPTOR_NAMES)
+    raise RuntimeError(
+        "Installed RDKit is missing descriptors required by the trained models: "
+        f"{missing}"
+    )
+
+# The model schema intentionally excludes Ipc and any descriptors added in
+# newer RDKit releases. Only these canonical training-time names are allowed.
 _DESCRIPTOR_FUNCS = [
-    (name, func) for name, func in Descriptors.descList if name != "Ipc"
+    (name, _DESCRIPTOR_FUNC_BY_NAME[name]) for name in TRAINING_DESCRIPTOR_NAMES
 ]
 
 

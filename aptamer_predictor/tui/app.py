@@ -8,8 +8,6 @@ from textual.binding import Binding
 from aptamer_predictor.predictor import EnsemblePredictor
 
 from .screens.input_screen import InputScreen
-from .screens.mutation_screen import MutationScreen
-from .screens.results_screen import ResultsScreen
 
 
 class PredictorApp(App):
