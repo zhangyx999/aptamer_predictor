@@ -38,9 +38,27 @@ pip install -r requirements.txt
 
 ```bash
 python -m aptamer_predictor predict --help
+python -m aptamer_predictor --tui --help
 ```
 
 ## Usage
+
+### Model directory resolution
+
+Model files are resolved in this order:
+
+1. `--model-dir`
+2. `APTAMER_MODEL_DIR`
+3. `./models`
+
+Examples:
+
+```bash
+python -m aptamer_predictor predict --model-dir ./models --aptamer "ATGC" --smiles "CCO"
+
+export APTAMER_MODEL_DIR=/absolute/path/to/models
+python -m aptamer_predictor --tui
+```
 
 ### Single prediction
 
@@ -75,6 +93,33 @@ python -m aptamer_predictor predict \
 Output files:
 - `predictions.csv` — summary results (sequence, SMILES, ensemble label, ensemble probability, true label)
 - `predictions_detail.json` — per-model detailed predictions
+
+### Interactive mutation search (TUI)
+
+Launch the Textual interface:
+
+```bash
+python -m aptamer_predictor --tui
+```
+
+Or start it programmatically:
+
+```python
+from aptamer_predictor.tui.app import run_tui
+
+run_tui()  # uses ./models by default
+```
+
+Workflow:
+- Enter an aptamer sequence and target molecule (SMILES or resolvable molecule name)
+- Select mutation sites interactively
+- Start exhaustive mutation prediction for the selected sites
+- Export positive candidates to CSV
+
+Notes:
+- `run_tui()` and CLI now share the same default model directory resolution and both fall back to `<repo>/models`
+- Pressing `New Search` during an active run cancels the current background search before returning to the input screen
+- The mutation search is exhaustive over the selected positions, so search space grows as `4^n`
 
 ### Model evaluation
 
@@ -144,13 +189,15 @@ Feature dim = sum(4^k for each k) + 209 RDKit descriptors (Ipc excluded).
 
 ```
 .
-├── aptamer_predictor/          # CLI tool package
+├── aptamer_predictor/          # CLI + TUI package
 │   ├── __init__.py
 │   ├── __main__.py             # python -m entry point
 │   ├── cli.py                  # Argument parsing & subcommands
 │   ├── features.py             # k-mer and molecular descriptor extraction
-│   └── predictor.py            # Model loading & ensemble prediction
-├── Ensemble model(pkl)/        # Pre-trained models
+│   ├── paths.py                # Shared model path resolution
+│   ├── predictor.py            # Model loading & ensemble prediction
+│   └── tui/                    # Textual mutation-search interface
+├── models/                     # Pre-trained models (.pkl)
 │   ├── (1mer)(Dataset N1)XGB.pkl
 │   ├── ...
 │   └── (123mer)(Dataset N9)biRNN.pkl

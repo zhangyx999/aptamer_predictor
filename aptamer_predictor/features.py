@@ -111,6 +111,80 @@ MER_K_MAP = {
 }
 
 
+def build_feature_vector_fast(
+    sequence: str,
+    precomputed_desc: list[float],
+    k_list: list[int],
+) -> np.ndarray:
+    """Build feature vector using pre-computed molecular descriptors.
+
+    Avoids redundant RDKit computation when all mutants share one SMILES.
+    """
+    kmer = kmer_features(sequence, k_list)
+    vec = np.array(kmer + precomputed_desc, dtype=np.float64)
+    return np.nan_to_num(vec, nan=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Vectorized batch feature matrix (for mutation enumeration)
+# ---------------------------------------------------------------------------
+
+_BASE_MAP = {"A": 0, "T": 1, "G": 2, "C": 3}
+
+
+def _encode_sequence(sequence: str) -> np.ndarray:
+    """Encode DNA sequence as int array.  A=0 T=1 G=2 C=3, unknown→0."""
+    return np.array([_BASE_MAP.get(c, 0) for c in sequence], dtype=np.int32)
+
+
+def build_feature_matrix(
+    sequences: list[str],
+    precomputed_desc: list[float],
+    k_list: list[int],
+) -> np.ndarray:
+    """Vectorized batch feature matrix construction.
+
+    All sequences **must** have the same length.  Molecular descriptors are
+    tiled across the batch so RDKit is called only once.
+
+    Returns ndarray of shape ``(n_sequences, total_feature_dim)`` with NaN→0.
+    """
+    if not sequences:
+        return np.empty((0, 0))
+
+    N = len(sequences)
+    desc_arr = np.array(precomputed_desc, dtype=np.float64)
+
+    # Encode all sequences into a single 2-D int array  (N, L)
+    encoded = np.array([_encode_sequence(s) for s in sequences], dtype=np.int32)
+    L = encoded.shape[1]
+
+    all_kmer = []
+    for k in k_list:
+        dim = 4 ** k
+        n_kmers = L - k + 1
+        if n_kmers <= 0:
+            all_kmer.append(np.zeros((N, dim), dtype=np.float64))
+            continue
+
+        # k-mer index = base-4 number at each sliding-window position
+        indices = np.zeros((N, n_kmers), dtype=np.int32)
+        for i in range(k):
+            indices = indices * 4 + encoded[:, i: i + n_kmers]
+
+        # Single-call batch bincount via offset trick
+        offsets = np.arange(N, dtype=np.int32)[:, None] * dim
+        flat = (indices + offsets).ravel()
+        counts = np.bincount(flat, minlength=N * dim).reshape(N, dim).astype(np.float64)
+        counts /= n_kmers
+        all_kmer.append(counts)
+
+    kmer_matrix = np.hstack(all_kmer)  # (N, total_kmer_dim)
+    desc_matrix = np.tile(desc_arr, (N, 1))  # (N, 209)
+    result = np.hstack([kmer_matrix, desc_matrix])
+    return np.nan_to_num(result, nan=0.0)
+
+
 def build_feature_vector(sequence: str, smiles: str, k_list: list[int]) -> np.ndarray:
     """Build a complete feature vector: concatenated k-mer + 209 descriptors.
 

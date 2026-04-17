@@ -6,7 +6,7 @@ import glob
 import os
 import pickle
 import re
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -86,6 +86,10 @@ class SimpleRNN:
 
         cls._nn_module = _SimpleRNN
         return _SimpleRNN
+
+
+class PredictionCancelled(Exception):
+    """Raised when a long-running mutation search is cancelled."""
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +253,177 @@ class EnsemblePredictor:
                 print(f"  Processed {i + 1}/{len(sequences)} samples")
 
         return all_results
+
+    # ---- mutation batch prediction (optimized) ---------------------------
+
+    def predict_mutation_batch(
+        self,
+        base_sequence: str,
+        smiles: str,
+        sites: list[int],
+        *,
+        batch_size: int = 2000,
+        progress_callback=None,
+        should_cancel: Optional[Callable[[], bool]] = None,
+    ) -> list[dict]:
+        """Enumerate all mutants at selected sites, batch-predict.
+
+        Collects **only** candidates where all 9 models predict binding
+        (ensemble_label == 1).
+
+        Optimizations:
+        - Pre-computes molecular descriptors once.
+        - Vectorized NumPy batch k-mer + feature matrix.
+        - Dynamic calibration determines optimal model order.
+        - Early-exit sequential filtering: each model only processes
+          survivors from the previous model.
+
+        Args:
+            base_sequence: Original aptamer sequence.
+            smiles: Target molecule SMILES.
+            sites: List of 0-indexed positions to mutate.
+            batch_size: Number of candidates per inference chunk.
+            progress_callback: Optional callable(done, total, info_dict).
+            should_cancel: Optional callable returning True when the
+                enumeration should abort immediately.
+
+        Returns:
+            List of positive-result dicts sorted by mean probability
+            (descending).
+        """
+        from itertools import product
+
+        from aptamer_predictor.features import (
+            MER_K_MAP,
+            build_feature_matrix,
+            molecular_descriptors,
+            rna_to_dna,
+        )
+
+        seq = rna_to_dna(base_sequence).upper()
+        seq_list = list(seq)
+        bases = ["A", "T", "G", "C"]
+        total = 4 ** len(sites)
+
+        def _check_cancelled() -> None:
+            if should_cancel and should_cancel():
+                raise PredictionCancelled()
+
+        # Pre-compute molecular descriptors once
+        _check_cancelled()
+        desc = molecular_descriptors(smiles)
+
+        # Collect per-model configs
+        model_configs = []
+        for model, mer, fname in self.models:
+            if mer is None or mer not in MER_K_MAP:
+                continue
+            model_configs.append((model, mer, fname, MER_K_MAP[mer]))
+
+        # --- Calibrate: determine optimal model order via small sample ---
+        calib_seqs = []
+        for combo in product(bases, repeat=len(sites)):
+            _check_cancelled()
+            if len(calib_seqs) >= 64:
+                break
+            mutant = seq_list.copy()
+            for pos, new_base in zip(sites, combo):
+                if 0 <= pos < len(mutant):
+                    mutant[pos] = new_base
+            calib_seqs.append("".join(mutant))
+
+        scored: list[tuple[int, object, str, str, list[int]]] = []
+        for model, mer, fname, k_list in model_configs:
+            _check_cancelled()
+            X = build_feature_matrix(calib_seqs, desc, k_list)
+            n_pos = int(model.predict(X).sum())
+            scored.append((n_pos, model, mer, fname, k_list))
+        scored.sort(key=lambda x: x[0])  # most selective first
+
+        ordered_models = [(m, mer, fn, kl) for _, m, mer, fn, kl in scored]
+
+        # --- Main enumeration with early-exit filtering ---
+        positives: list[dict] = []
+        done = 0
+
+        def _flush_chunk(candidates):
+            nonlocal done
+            _check_cancelled()
+            if not candidates:
+                return
+
+            cand_seqs = [c[0] for c in candidates]
+            cand_muts = [c[1] for c in candidates]
+            B = len(candidates)
+
+            # Early-exit sequential filtering
+            surviving = np.arange(B)
+            # Store per-candidate probs: list of arrays, one per model
+            all_model_probs = np.zeros((B, len(ordered_models)), dtype=np.float64)
+
+            for m_idx, (model, mer, fname, k_list) in enumerate(ordered_models):
+                _check_cancelled()
+                if len(surviving) == 0:
+                    break
+
+                surv_seqs = [cand_seqs[i] for i in surviving]
+                X = build_feature_matrix(surv_seqs, desc, k_list)
+                preds = model.predict(X)
+                probs = model.predict_proba(X)[:, 1]
+
+                # Store probs for all surviving candidates
+                all_model_probs[surviving, m_idx] = probs
+
+                # Filter: keep only positives
+                mask = preds >= 0.5
+                surviving = surviving[mask]
+
+            # Final survivors are the positives
+            for idx in surviving:
+                mean_prob = float(np.mean(all_model_probs[idx]))
+                positives.append({
+                    "sequence": cand_seqs[idx],
+                    "mutations": cand_muts[idx],
+                    "mean_probability": round(mean_prob, 6),
+                    "ensemble_label": 1,
+                })
+
+            done += B
+            if progress_callback:
+                _check_cancelled()
+                progress_callback(done, total, {})
+
+        chunk = []
+        for combo in product(bases, repeat=len(sites)):
+            _check_cancelled()
+            mutant = seq_list.copy()
+            mutations = []
+            valid = True
+            for pos, new_base in zip(sites, combo):
+                if pos < 0 or pos >= len(mutant):
+                    valid = False
+                    break
+                old = mutant[pos]
+                if new_base == old:
+                    continue
+                mutant[pos] = new_base
+                mutations.append(f"{pos}:{old}>{new_base}")
+
+            if not valid:
+                continue
+
+            mut_seq = "".join(mutant)
+            mut_desc_str = ";".join(mutations) if mutations else "wild-type"
+            chunk.append((mut_seq, mut_desc_str))
+
+            if len(chunk) >= batch_size:
+                _flush_chunk(chunk)
+                chunk = []
+
+        _flush_chunk(chunk)
+
+        positives.sort(key=lambda r: r["mean_probability"], reverse=True)
+        return positives
 
     # ---- evaluate on pre-formatted CSV -----------------------------------
 

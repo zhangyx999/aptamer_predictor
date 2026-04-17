@@ -1,0 +1,72 @@
+/* Aptamer Mutation Predictor — dark theme */
+
+Screen {
+    align: center middle;
+}
+
+#input-container,
+#mutation-container,
+#results-container {
+    width: 72;
+    height: auto;
+    padding: 2 4;
+    border: round $primary;
+    background: $surface;
+}
+
+.title {
+    text-align: center;
+    text-style: bold;
+    color: $text;
+    margin-bottom: 1;
+}
+
+Input {
+    margin-bottom: 1;
+}
+
+#status {
+    color: $text-muted;
+    margin-top: 1;
+}
+
+#error {
+    color: $error;
+    margin-top: 1;
+}
+
+#site-counter {
+    color: $accent;
+    margin-top: 1;
+    margin-bottom: 1;
+}
+
+SelectionList {
+    height: 14;
+    border: solid $primary-darken-2;
+    margin-bottom: 1;
+}
+
+Button {
+    margin: 0 1;
+}
+
+.button-row {
+    align: center middle;
+    height: 3;
+    margin-top: 1;
+}
+
+DataTable {
+    height: 14;
+    margin-bottom: 1;
+}
+
+ProgressBar {
+    margin-bottom: 1;
+}
+
+#progress-label {
+    color: $text-muted;
+    margin-bottom: 1;
+}

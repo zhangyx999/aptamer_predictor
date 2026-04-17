@@ -32,3 +32,9 @@ CLAUDE.md
 
 # Environment variables
 .env
+
+# Tests
+tests/
+
+# Data
+sequence/

@@ -11,20 +11,12 @@ from typing import Optional
 
 import numpy as np
 
+from aptamer_predictor.paths import resolve_model_dir
+
 
 def _resolve_model_dir(args_model_dir: Optional[str]) -> str:
     """Determine the model directory: CLI arg > env var > default."""
-    if args_model_dir:
-        return os.path.abspath(args_model_dir)
-
-    env_dir = os.environ.get("APTAMER_MODEL_DIR")
-    if env_dir:
-        return os.path.abspath(env_dir)
-
-    # Default: models/ next to this package
-    pkg_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(pkg_dir)
-    return os.path.join(project_root, "models")
+    return resolve_model_dir(args_model_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +330,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to directory containing .pkl model files "
              "(default: models/)",
     )
+    parser.add_argument(
+        "--tui", action="store_true",
+        help="Launch interactive Textual TUI",
+    )
 
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -381,6 +377,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.tui:
+        from aptamer_predictor.tui.app import run_tui
+        run_tui(model_dir=_resolve_model_dir(args.model_dir))
+        return
 
     if args.command is None:
         parser.print_help()
