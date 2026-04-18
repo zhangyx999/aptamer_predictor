@@ -117,7 +117,12 @@ def cmd_predict(args):
             reader = csv.reader(f)
             next(reader)  # skip header
             for row in reader:
-                if len(row) <= max(seq_col, smi_col):
+                max_col = max(seq_col, smi_col)
+                if label_col is not None:
+                    max_col = max(max_col, label_col)
+                if id_col is not None:
+                    max_col = max(max_col, id_col)
+                if len(row) <= max_col:
                     skipped += 1
                     continue
                 seq_val = row[seq_col].strip()
@@ -312,7 +317,7 @@ def _write_batch_results(results: list[dict], output_path: str):
             writer.writerow([
                 r.get("sequence", ""),
                 r.get("smiles", ""),
-                r.get("ensemble_label", ""),
+                r["ensemble_label"],
             ])
 
 

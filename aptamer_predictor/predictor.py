@@ -56,15 +56,25 @@ class SimpleRNN:
         class _SimpleRNN(nn.Module):
             """RNN -> Linear -> Sigmoid -> Linear -> Sigmoid."""
 
-            def forward(self, x):
+            def _to_device(self, x):
+                """Move input to same device as model parameters."""
+                device = next(self.parameters()).device
                 if not isinstance(x, torch.Tensor):
-                    x = torch.FloatTensor(np.asarray(x, dtype=np.float32))
+                    x = torch.tensor(
+                        np.asarray(x, dtype=np.float32), device=device
+                    )
+                elif x.device != device:
+                    x = x.to(device)
+                return x
+
+            def forward(self, x):
+                x = self._to_device(x)
                 if x.dim() == 1:
-                    x = x.unsqueeze(0)
-                # RNN expects (seq_len, batch, input_size)
-                x = x.unsqueeze(0)  # (1, batch, features)
+                    x = x.unsqueeze(0)  # (1, features) — single sample
+                # batch_first=True: expect (batch, seq_len, input_size)
+                x = x.unsqueeze(1)  # (batch, 1, features)
                 out, _ = self.rnn(x)
-                out = out.squeeze(0)  # (batch, hidden * num_directions)
+                out = out.squeeze(1)  # (batch, hidden * num_directions)
                 out = self.sig1(self.fc1(out))
                 out = self.sig2(self.fc2(out))  # (batch, 1)
                 return out.squeeze(-1)  # (batch,)
@@ -133,7 +143,9 @@ class EnsemblePredictor:
     def __init__(self, model_dir: str):
         self.model_dir = model_dir
         self.models = []  # list of (model, mer_label, filepath)
+        self._device = "cpu"
         self._load_all()
+        self._setup_cuda()
 
     def _load_all(self):
         pattern = os.path.join(self.model_dir, "(*mer)*.pkl")
@@ -155,6 +167,59 @@ class EnsemblePredictor:
                 print(f"  Loaded: {os.path.basename(fp)}")
             except Exception as e:
                 print(f"  Warning: failed to load {os.path.basename(fp)}: {e}")
+
+        if len(self.models) < 9:
+            print(
+                f"  Warning: expected 9 models, only loaded "
+                f"{len(self.models)}. Ensemble results may be unreliable."
+            )
+
+    # ---- CUDA setup ------------------------------------------------------
+
+    def _setup_cuda(self) -> None:
+        """Move PyTorch RNN models to CUDA if available."""
+        from aptamer_predictor.cuda import get_device
+        self._device = get_device()
+        if self._device != "cuda":
+            return
+
+        import torch
+        new_models = []
+        for model, mer, fname in self.models:
+            if isinstance(model, torch.nn.Module):
+                model = model.to("cuda")
+            new_models.append((model, mer, fname))
+        self.models = new_models
+        print(f"  CUDA acceleration enabled ({torch.cuda.get_device_name(0)})")
+
+    @staticmethod
+    def _is_xgboost(model) -> bool:
+        try:
+            from xgboost import XGBClassifier, Booster
+            return isinstance(model, (XGBClassifier, Booster))
+        except ImportError:
+            return False
+
+    def _predict_batch(self, model, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Batch prediction with optional CUDA acceleration.
+
+        Returns (predictions, positive_class_probabilities).
+        """
+        # XGBoost GPU path
+        if self._device == "cuda" and self._is_xgboost(model):
+            try:
+                import xgboost as xgb
+                booster = model.get_booster()
+                dm = xgb.DMatrix(X.astype(np.float32), device="cuda")
+                probs = booster.predict(dm)
+                return (probs >= 0.5).astype(int), probs
+            except Exception:
+                pass  # fall through to CPU
+
+        # Standard sklearn / PyTorch API (PyTorch handles CUDA internally)
+        preds = model.predict(X)
+        probs = model.predict_proba(X)[:, 1]
+        return preds.astype(int), probs
 
     # ---- single sample ---------------------------------------------------
 
@@ -336,7 +401,8 @@ class EnsemblePredictor:
         for model, mer, fname, k_list in model_configs:
             _check_cancelled()
             X = build_feature_matrix(calib_seqs, desc, k_list)
-            n_pos = int(model.predict(X).sum())
+            preds, _ = self._predict_batch(model, X)
+            n_pos = int(preds.sum())
             scored.append((n_pos, model, mer, fname, k_list))
         scored.sort(key=lambda x: x[0])  # most selective first
 
@@ -368,8 +434,7 @@ class EnsemblePredictor:
 
                 surv_seqs = [cand_seqs[i] for i in surviving]
                 X = build_feature_matrix(surv_seqs, desc, k_list)
-                preds = model.predict(X)
-                probs = model.predict_proba(X)[:, 1]
+                preds, probs = self._predict_batch(model, X)
 
                 # Store probs for all surviving candidates
                 all_model_probs[surviving, m_idx] = probs
