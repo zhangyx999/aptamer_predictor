@@ -330,6 +330,7 @@ class EnsemblePredictor:
         batch_size: int = 2000,
         progress_callback=None,
         should_cancel: Optional[Callable[[], bool]] = None,
+        result_callback: Optional[Callable[[dict], None]] = None,
     ) -> list[dict]:
         """Enumerate all mutants at selected sites, batch-predict.
 
@@ -446,12 +447,15 @@ class EnsemblePredictor:
             # Final survivors are the positives
             for idx in surviving:
                 mean_prob = float(np.mean(all_model_probs[idx]))
-                positives.append({
+                result = {
                     "sequence": cand_seqs[idx],
                     "mutations": cand_muts[idx],
                     "mean_probability": round(mean_prob, 6),
                     "ensemble_label": 1,
-                })
+                }
+                positives.append(result)
+                if result_callback:
+                    result_callback(result)
 
             done += B
             if progress_callback:

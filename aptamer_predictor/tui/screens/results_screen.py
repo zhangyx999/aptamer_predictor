@@ -1,4 +1,4 @@
-"""Results screen — progress bar + streaming results table + export."""
+"""Results screen — progress bar + streaming results table + auto CSV export."""
 
 from __future__ import annotations
 
@@ -27,6 +27,10 @@ class ResultsScreen(Screen):
         self._prediction_done = False
         self._return_to_input_pending = False
         self._is_unmounted = False
+        self._csv_file = None
+        self._csv_writer = None
+        self._csv_lock = threading.Lock()
+        self._csv_filename: str = ""
 
     def compose(self) -> ComposeResult:
         with Container(id="results-container"):
@@ -35,13 +39,21 @@ class ResultsScreen(Screen):
             yield Label("Preparing...", id="progress-label")
             yield DataTable(id="results-table")
             with Container(classes="button-row"):
-                yield Button("Export CSV", variant="success", id="export-btn")
                 yield Button("New Search", variant="default", id="new-btn")
 
     def on_mount(self) -> None:
         table = self.query_one("#results-table", DataTable)
         table.add_columns("Rank", "Sequence", "Mutations", "Prob", "Label")
-        self.query_one("#export-btn", Button).disabled = True
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._csv_filename = f"{ts}.csv"
+        self._csv_file = open(self._csv_filename, "w", newline="")
+        self._csv_writer = csv.writer(self._csv_file)
+        self._csv_writer.writerow([
+            "rank", "sequence", "mutations",
+            "mean_probability", "ensemble_label",
+        ])
+        self._csv_file.flush()
 
         app = self.app
         assert app.predictor is not None
@@ -65,13 +77,26 @@ class ResultsScreen(Screen):
 
         total_mutations = 4 ** len(sites)
         batch_size = max(50, total_mutations // 200)
+        csv_count = [0]
+
+        def on_result(result: dict) -> None:
+            with self._csv_lock:
+                csv_count[0] += 1
+                self._csv_writer.writerow([
+                    csv_count[0],
+                    result["sequence"],
+                    result["mutations"],
+                    result["mean_probability"],
+                    result["ensemble_label"],
+                ])
+                self._csv_file.flush()
 
         def on_progress(done: int, total: int, info: dict) -> None:
             pct = (done / total * 100) if total > 0 else 0
             self.app.call_from_thread(self._update_progress, done, total, pct)
 
         self.app.call_from_thread(
-            self._set_label, "Calibrating model order..."
+            self._set_label, f"Running... output → {self._csv_filename}"
         )
 
         try:
@@ -82,6 +107,7 @@ class ResultsScreen(Screen):
                 batch_size=batch_size,
                 progress_callback=on_progress,
                 should_cancel=lambda: self._should_cancel(worker),
+                result_callback=on_result,
             )
         except PredictionCancelled:
             self.app.call_from_thread(self._handle_prediction_cancelled)
@@ -109,7 +135,6 @@ class ResultsScreen(Screen):
     def _cancel_prediction(self) -> None:
         self._cancel_event.set()
         self.query_one("#progress-label", Label).update("Cancelling...")
-        self.query_one("#export-btn", Button).disabled = True
         self.query_one("#new-btn", Button).disabled = True
 
         worker = self._prediction_worker
@@ -130,7 +155,7 @@ class ResultsScreen(Screen):
     def _update_progress(self, done: int, total: int, pct: float) -> None:
         bar = self.query_one("#progress-bar", ProgressBar)
         bar.update(progress=pct)
-        self._set_label(f"{done:,} / {total:,} ({pct:.1f}%)")
+        self._set_label(f"{done:,} / {total:,} ({pct:.1f}%) → {self._csv_filename}")
 
     def _show_results(self, results: list[dict]) -> None:
         if self._cancel_event.is_set():
@@ -156,14 +181,14 @@ class ResultsScreen(Screen):
                 "Bind",
             )
 
-        label.update(f"Done — {len(results)} positive candidates (all 9 models agree)")
-        self.query_one("#export-btn", Button).disabled = not bool(results)
+        label.update(
+            f"Done — {len(results)} candidates → {self._csv_filename}"
+        )
         self.query_one("#new-btn", Button).disabled = False
 
     def _show_error(self, message: str) -> None:
         self._prediction_done = True
         self.query_one("#progress-label", Label).update(f"Error: {message}")
-        self.query_one("#export-btn", Button).disabled = True
         self.query_one("#new-btn", Button).disabled = False
 
     def _handle_prediction_cancelled(self) -> None:
@@ -172,7 +197,6 @@ class ResultsScreen(Screen):
             return
 
         self.query_one("#progress-label", Label).update("Prediction cancelled")
-        self.query_one("#export-btn", Button).disabled = True
 
         if self._return_to_input_pending:
             self._return_to_input()
@@ -181,9 +205,7 @@ class ResultsScreen(Screen):
         self.query_one("#new-btn", Button).disabled = False
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "export-btn":
-            self._export_csv()
-        elif event.button.id == "new-btn":
+        if event.button.id == "new-btn":
             if self._prediction_done:
                 self._return_to_input()
                 return
@@ -191,8 +213,16 @@ class ResultsScreen(Screen):
             self._return_to_input_pending = True
             self._cancel_prediction()
 
+    def _close_csv(self) -> None:
+        if self._csv_file is not None:
+            with self._csv_lock:
+                self._csv_file.close()
+            self._csv_file = None
+            self._csv_writer = None
+
     def on_unmount(self) -> None:
         self._is_unmounted = True
+        self._close_csv()
         if not self._prediction_done:
             self._cancel_event.set()
             worker = self._prediction_worker
@@ -200,29 +230,3 @@ class ResultsScreen(Screen):
                 cancel = getattr(worker, "cancel", None)
                 if callable(cancel):
                     cancel()
-
-    def _export_csv(self) -> None:
-        if not self._results:
-            return
-
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"mutation_predictions_{ts}.csv"
-
-        with open(filename, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                "rank", "sequence", "mutations",
-                "mean_probability", "ensemble_label",
-            ])
-            for rank, result in enumerate(self._results, 1):
-                writer.writerow([
-                    rank,
-                    result["sequence"],
-                    result["mutations"],
-                    result["mean_probability"],
-                    result["ensemble_label"],
-                ])
-
-        self.query_one("#progress-label", Label).update(
-            f"Exported to {filename}"
-        )

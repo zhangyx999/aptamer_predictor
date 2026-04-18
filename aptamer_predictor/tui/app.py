@@ -38,4 +38,4 @@ class PredictorApp(App):
 def run_tui(model_dir: str | None = None) -> None:
     """Public entry point for launching the TUI."""
     app = PredictorApp(model_dir=model_dir)
-    app.run()
+    app.run(mouse=False)
