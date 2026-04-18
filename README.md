@@ -135,6 +135,8 @@ Notes:
 - Progress updates are chunked, and the prediction loop runs in a Textual worker thread so the UI stays responsive
 - If CUDA is available, PyTorch RNN models are moved to GPU and XGBoost uses its GPU prediction path when possible
 
+For an in-depth technical explanation of each optimization, see [MUTATION_SEARCH_ACCELERATION.md](MUTATION_SEARCH_ACCELERATION.md).
+
 ### Model evaluation
 
 Evaluate models on pre-formatted test data with labels:
