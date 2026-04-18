@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import threading
+import time
 from datetime import datetime
 
 import textual.worker as textual_worker
@@ -31,12 +32,15 @@ class ResultsScreen(Screen):
         self._csv_writer = None
         self._csv_lock = threading.Lock()
         self._csv_filename: str = ""
+        self._hit_count = 0
+        self._start_time = 0.0
 
     def compose(self) -> ComposeResult:
         with Container(id="results-container"):
             yield Label("Prediction Results", classes="title")
             yield ProgressBar(total=100, id="progress-bar")
             yield Label("Preparing...", id="progress-label")
+            yield Label("Hits: 0", id="hit-counter")
             yield DataTable(id="results-table")
             with Container(classes="button-row"):
                 yield Button("New Search", variant="default", id="new-btn")
@@ -88,6 +92,8 @@ class ResultsScreen(Screen):
                     result["mean_probability"],
                 ])
                 self._csv_file.flush()
+            self._hit_count += 1
+            self.app.call_from_thread(self._update_hit_counter)
 
         def on_progress(done: int, total: int, info: dict) -> None:
             pct = (done / total * 100) if total > 0 else 0
@@ -98,6 +104,7 @@ class ResultsScreen(Screen):
         )
 
         try:
+            self._start_time = time.monotonic()
             predictor.predict_mutation_batch(
                 sequence,
                 smiles,
@@ -154,10 +161,28 @@ class ResultsScreen(Screen):
             return
         self.query_one("#progress-label", Label).update(text)
 
+    def _format_speed(self, speed: float) -> str:
+        if speed >= 1_000_000:
+            return f"{speed / 1_000_000:.1f}M/s"
+        if speed >= 1_000:
+            return f"{speed / 1_000:.1f}K/s"
+        return f"{speed:.0f}/s"
+
     def _update_progress(self, done: int, total: int, pct: float) -> None:
         bar = self.query_one("#progress-bar", ProgressBar)
         bar.update(progress=pct)
-        self._set_label(f"{done:,} / {total:,} ({pct:.1f}%) → {self._csv_filename}")
+        elapsed = time.monotonic() - self._start_time if self._start_time else 1.0
+        speed = done / elapsed if elapsed > 0 else 0.0
+        self._set_label(
+            f"{done:,} / {total:,} ({pct:.1f}%) | {self._format_speed(speed)} → {self._csv_filename}"
+        )
+
+    def _update_hit_counter(self) -> None:
+        if self._cancel_event.is_set() or self._is_unmounted:
+            return
+        self.query_one("#hit-counter", Label).update(
+            f"Hits: {self._hit_count:,}"
+        )
 
     def _load_results_from_csv(self) -> list[dict]:
         if not self._csv_filename:

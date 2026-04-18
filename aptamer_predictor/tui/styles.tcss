@@ -70,3 +70,9 @@ ProgressBar {
     color: $text-muted;
     margin-bottom: 1;
 }
+
+#hit-counter {
+    color: $success;
+    text-style: bold;
+    margin-bottom: 1;
+}
