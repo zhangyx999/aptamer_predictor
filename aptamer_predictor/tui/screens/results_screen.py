@@ -63,16 +63,23 @@ class ResultsScreen(Screen):
         smiles = app.smiles
         sites = app.selected_sites
 
+        total_mutations = 4 ** len(sites)
+        batch_size = max(50, total_mutations // 200)
+
         def on_progress(done: int, total: int, info: dict) -> None:
-            pct = int(done / total * 100) if total > 0 else 0
+            pct = (done / total * 100) if total > 0 else 0
             self.app.call_from_thread(self._update_progress, done, total, pct)
+
+        self.app.call_from_thread(
+            self._set_label, "Calibrating model order..."
+        )
 
         try:
             results = predictor.predict_mutation_batch(
                 sequence,
                 smiles,
                 sites,
-                batch_size=1000,
+                batch_size=batch_size,
                 progress_callback=on_progress,
                 should_cancel=lambda: self._should_cancel(worker),
             )
@@ -115,14 +122,15 @@ class ResultsScreen(Screen):
         self.app.pop_screen()
         self.app.pop_screen()
 
-    def _update_progress(self, done: int, total: int, pct: int) -> None:
+    def _set_label(self, text: str) -> None:
         if self._cancel_event.is_set() or self._is_unmounted:
             return
+        self.query_one("#progress-label", Label).update(text)
 
+    def _update_progress(self, done: int, total: int, pct: float) -> None:
         bar = self.query_one("#progress-bar", ProgressBar)
-        label = self.query_one("#progress-label", Label)
         bar.update(progress=pct)
-        label.update(f"{done:,} / {total:,} ({pct}%)")
+        self._set_label(f"{done:,} / {total:,} ({pct:.1f}%)")
 
     def _show_results(self, results: list[dict]) -> None:
         if self._cancel_event.is_set():
