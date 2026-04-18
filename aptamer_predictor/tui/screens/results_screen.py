@@ -62,6 +62,9 @@ class ResultsScreen(Screen):
 
         app = self.app
         assert app.predictor is not None
+        total_mutations = 4 ** len(app.selected_sites)
+        self._start_time = time.monotonic()
+        self._update_progress(0, total_mutations, 0.0)
 
         self._prediction_worker = self.run_worker(
             self._run_prediction,
@@ -99,12 +102,7 @@ class ResultsScreen(Screen):
             pct = (done / total * 100) if total > 0 else 0
             self.app.call_from_thread(self._update_progress, done, total, pct)
 
-        self.app.call_from_thread(
-            self._set_label, f"Running... output → {self._csv_filename}"
-        )
-
         try:
-            self._start_time = time.monotonic()
             predictor.predict_mutation_batch(
                 sequence,
                 smiles,

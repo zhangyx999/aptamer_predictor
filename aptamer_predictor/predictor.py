@@ -460,6 +460,13 @@ class EnsemblePredictor:
                 mask = preds >= 0.5
                 surviving = surviving[mask]
 
+            done += B
+            progress_mark += B
+            if progress_callback and (progress_mark >= batch_size or done == total):
+                _check_cancelled()
+                progress_callback(done, total, {})
+                progress_mark = 0
+
             # Final survivors are the positives
             for idx in surviving:
                 mean_prob = float(np.mean(all_model_probs[idx]))
@@ -472,13 +479,6 @@ class EnsemblePredictor:
                     result_callback(result)
                 if positives is not None:
                     positives.append(result)
-
-            done += B
-            progress_mark += B
-            if progress_callback and (progress_mark >= batch_size or done == total):
-                _check_cancelled()
-                progress_callback(done, total, {})
-                progress_mark = 0
 
         if len(sites) == 0:
             _flush_chunk(seq_bytes.reshape(1, -1))
