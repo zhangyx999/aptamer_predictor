@@ -91,8 +91,7 @@ python -m aptamer_predictor predict \
 ```
 
 Output files:
-- `predictions.csv` — summary results (sequence, SMILES, ensemble label, ensemble probability, true label)
-- `predictions_detail.json` — per-model detailed predictions
+- `predictions.csv` — summary results (`sequence`, `smiles`, `ensemble_label`)
 
 ### Interactive mutation search (TUI)
 
@@ -111,15 +110,30 @@ run_tui()  # uses ./models by default
 ```
 
 Workflow:
-- Enter an aptamer sequence and target molecule (SMILES or resolvable molecule name)
+- Enter an aptamer sequence and target molecule (SMILES or resolvable molecule name via PubChem)
+- Optionally set the CSV filename for exported hits
 - Select mutation sites interactively
 - Start exhaustive mutation prediction for the selected sites
-- Export positive candidates to CSV
+- Stream only positive ensemble hits to CSV while showing progress, hit count, and ranked results
 
 Notes:
 - `run_tui()` and CLI now share the same default model directory resolution and both fall back to `<repo>/models`
+- Molecule-name input requires network access because it resolves names through the PubChem REST API; direct SMILES input works offline
 - Pressing `New Search` during an active run cancels the current background search before returning to the input screen
 - The mutation search is exhaustive over the selected positions, so search space grows as `4^n`
+
+### TUI acceleration strategy
+
+`--tui` is optimized for exhaustive mutation search rather than generic batch prediction:
+
+- The target molecule descriptors are computed once per run and reused for every mutant
+- Mutants are enumerated in large NumPy batches instead of one sequence at a time
+- k-mer features are built with vectorized batch logic (`build_feature_matrix`) rather than Python loops per candidate
+- Model order is calibrated on a small sample, then the most selective models run first
+- Candidates are filtered with early exit: once a mutant fails one model, later models are skipped for that mutant
+- Positive hits are streamed directly to CSV (`collect_results=False`) instead of keeping the full search space in memory
+- Progress updates are chunked, and the prediction loop runs in a Textual worker thread so the UI stays responsive
+- If CUDA is available, PyTorch RNN models are moved to GPU and XGBoost uses its GPU prediction path when possible
 
 ### Model evaluation
 
@@ -169,7 +183,7 @@ Column names are case-insensitive and support aliases (e.g., `aptamer`, `Sequenc
 
 ## Ensemble Models
 
-The tool includes 9 pre-trained models combined via soft voting:
+The tool includes 9 pre-trained models. The current ensemble decision rule is strict consensus: a sample is labeled binding only when all loaded models predict binding (`ensemble_label == 1`).
 
 | Model            | Type           | k-mer combo | Feature dim |
 |------------------|----------------|-------------|-------------|

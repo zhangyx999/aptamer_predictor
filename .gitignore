@@ -38,3 +38,7 @@ tests/
 
 # Data
 sequence/
+AGENTS.md
+
+# Root CSV files
+/*.csv
