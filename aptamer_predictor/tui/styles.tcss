@@ -58,7 +58,7 @@ Button {
 }
 
 DataTable {
-    height: 14;
+    height: 12;
     margin-bottom: 1;
 }
 

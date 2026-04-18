@@ -22,7 +22,6 @@ class ResultsScreen(Screen):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._results: list[dict] = []
         self._prediction_worker: Worker | None = None
         self._cancel_event = threading.Event()
         self._prediction_done = False
@@ -34,6 +33,13 @@ class ResultsScreen(Screen):
         self._csv_filename: str = ""
         self._hit_count = 0
         self._start_time = 0.0
+        self._total_mutations = 0
+        self._last_progress_done = 0
+        self._last_progress_time = 0.0
+        self._estimated_done = 0.0
+        self._progress_timer = None
+        self._recent_results: list[dict] = []
+        self._row_key_counter = 0
 
     def compose(self) -> ComposeResult:
         with Container(id="results-container"):
@@ -47,7 +53,7 @@ class ResultsScreen(Screen):
 
     def on_mount(self) -> None:
         table = self.query_one("#results-table", DataTable)
-        table.add_columns("Rank", "Sequence", "Prob")
+        table.add_columns("Sequence", "Prob", "Time")
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         requested_filename = getattr(self.app, "result_filename", "").strip()
@@ -62,9 +68,11 @@ class ResultsScreen(Screen):
 
         app = self.app
         assert app.predictor is not None
-        total_mutations = 4 ** len(app.selected_sites)
+        self._total_mutations = 4 ** len(app.selected_sites)
         self._start_time = time.monotonic()
-        self._update_progress(0, total_mutations, 0.0)
+        self.query_one("#progress-bar", ProgressBar).total = self._total_mutations
+        self._progress_timer = self.set_interval(1.0, self._tick_progress)
+        self._update_progress(0, self._total_mutations, 0.0, None)
 
         self._prediction_worker = self.run_worker(
             self._run_prediction,
@@ -95,12 +103,20 @@ class ResultsScreen(Screen):
                     result["mean_probability"],
                 ])
                 self._csv_file.flush()
+
             self._hit_count += 1
+            seen_at = datetime.now().strftime("%H:%M")
             self.app.call_from_thread(self._update_hit_counter)
+            self.app.call_from_thread(self._append_recent_result, result, seen_at)
 
         def on_progress(done: int, total: int, info: dict) -> None:
-            pct = (done / total * 100) if total > 0 else 0
-            self.app.call_from_thread(self._update_progress, done, total, pct)
+            del info
+            now = time.monotonic()
+            self._last_progress_done = done
+            self._last_progress_time = now
+            self._estimated_done = float(done)
+            pct = (done / total * 100) if total else 0.0
+            self.app.call_from_thread(self._update_progress, done, total, pct, self._eta_seconds())
 
         try:
             predictor.predict_mutation_batch(
@@ -122,8 +138,7 @@ class ResultsScreen(Screen):
         finally:
             self._close_csv()
 
-        results = self._load_results_from_csv()
-        self.app.call_from_thread(self._show_results, results)
+        self.app.call_from_thread(self._show_results)
 
     def _should_cancel(self, worker: Worker | None) -> bool:
         if self._cancel_event.is_set():
@@ -166,14 +181,52 @@ class ResultsScreen(Screen):
             return f"{speed / 1_000:.1f}K/s"
         return f"{speed:.0f}/s"
 
-    def _update_progress(self, done: int, total: int, pct: float) -> None:
+    def _update_progress(
+        self,
+        done: float,
+        total: int,
+        pct: float,
+        eta_seconds: float | None,
+    ) -> None:
         bar = self.query_one("#progress-bar", ProgressBar)
-        bar.update(progress=pct)
+        bar.update(progress=done)
         elapsed = time.monotonic() - self._start_time if self._start_time else 1.0
         speed = done / elapsed if elapsed > 0 else 0.0
+        eta_text = self._format_eta(eta_seconds)
         self._set_label(
-            f"{done:,} / {total:,} ({pct:.1f}%) | {self._format_speed(speed)} → {self._csv_filename}"
+            f"{pct:.1f}% | {int(done):,} / {total:,} | {self._format_speed(speed)} | ETA: {eta_text} → {self._csv_filename}"
         )
+
+    def _tick_progress(self) -> None:
+        if self._prediction_done or self._cancel_event.is_set():
+            return
+
+        estimated_done = float(self._last_progress_done)
+        if self._last_progress_done > 0 and self._last_progress_time > self._start_time:
+            elapsed_since_callback = max(0.0, time.monotonic() - self._last_progress_time)
+            average_speed = self._last_progress_done / max(
+                1e-9,
+                self._last_progress_time - self._start_time,
+            )
+            estimated_done += average_speed * elapsed_since_callback
+
+        self._estimated_done = min(float(self._total_mutations), max(float(self._last_progress_done), estimated_done))
+        pct = (self._estimated_done / self._total_mutations * 100) if self._total_mutations else 0.0
+        self._update_progress(self._estimated_done, self._total_mutations, pct, self._eta_seconds())
+
+    def _eta_seconds(self) -> float | None:
+        elapsed = time.monotonic() - self._start_time if self._start_time else 0.0
+        speed = self._estimated_done / elapsed if elapsed > 0 else 0.0
+        if speed <= 0 or self._estimated_done <= 0:
+            return None
+        return max(0.0, (self._total_mutations - self._estimated_done) / speed)
+
+    def _format_eta(self, seconds: float | None) -> str:
+        if seconds is None:
+            return "--:--"
+        remaining = max(0, int(seconds))
+        minutes, secs = divmod(remaining, 60)
+        return f"{minutes:02d}:{secs:02d}"
 
     def _update_hit_counter(self) -> None:
         if self._cancel_event.is_set() or self._is_unmounted:
@@ -182,48 +235,37 @@ class ResultsScreen(Screen):
             f"Hits: {self._hit_count:,}"
         )
 
-    def _load_results_from_csv(self) -> list[dict]:
-        if not self._csv_filename:
-            return []
+    def _append_recent_result(self, result: dict, seen_at: str) -> None:
+        table = self.query_one("#results-table", DataTable)
+        entry = {
+            "sequence": result["sequence"],
+            "mean_probability": result["mean_probability"],
+            "time": seen_at,
+            "row_key": f"recent-{self._row_key_counter}",
+        }
+        self._row_key_counter += 1
+        self._recent_results.append(entry)
+        table.add_row(
+            entry["sequence"],
+            f"{entry['mean_probability']:.4f}",
+            entry["time"],
+            key=entry["row_key"],
+        )
 
-        results: list[dict] = []
-        with open(self._csv_filename, newline="") as handle:
-            reader = csv.DictReader(handle)
-            for row in reader:
-                results.append(
-                    {
-                        "sequence": row["sequence"],
-                        "mean_probability": float(row["mean_probability"]),
-                    }
-                )
+        if len(self._recent_results) > 10:
+            evicted = self._recent_results.pop(0)
+            table.remove_row(evicted["row_key"])
 
-        results.sort(key=lambda r: r["mean_probability"], reverse=True)
-        return results
-
-    def _show_results(self, results: list[dict]) -> None:
+    def _show_results(self) -> None:
         if self._cancel_event.is_set():
             self._handle_prediction_cancelled()
             return
 
         self._prediction_done = True
-        self._results = results
-        table = self.query_one("#results-table", DataTable)
-        label = self.query_one("#progress-label", Label)
-
-        for rank, result in enumerate(results, 1):
-            seq_short = (
-                result["sequence"][:30] + "..."
-                if len(result["sequence"]) > 30
-                else result["sequence"]
-            )
-            table.add_row(
-                str(rank),
-                seq_short,
-                f"{result['mean_probability']:.4f}",
-            )
-
-        label.update(
-            f"Done — {len(results)} candidates → {self._csv_filename}"
+        if self._progress_timer is not None:
+            self._progress_timer.stop()
+        self.query_one("#progress-label", Label).update(
+            f"Done — {self._hit_count:,} candidates → {self._csv_filename}"
         )
         self.query_one("#new-btn", Button).disabled = False
 
@@ -263,6 +305,8 @@ class ResultsScreen(Screen):
 
     def on_unmount(self) -> None:
         self._is_unmounted = True
+        if self._progress_timer is not None:
+            self._progress_timer.stop()
         if not self._prediction_done:
             self._cancel_event.set()
             worker = self._prediction_worker
