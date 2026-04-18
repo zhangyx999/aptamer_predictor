@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from textual.app import ComposeResult
 from textual.containers import Container
 from textual.screen import Screen
@@ -47,6 +49,28 @@ def _resolve_name_or_smiles(text: str) -> tuple[str | None, str | None]:
         return None, f"Cannot resolve '{text}' as SMILES or molecule name"
 
 
+def _default_result_filename() -> str:
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+
+def _normalize_result_filename(text: str) -> tuple[str | None, str | None]:
+    filename = text.strip()
+    if not filename:
+        return None, "Result filename is required"
+
+    if not filename.lower().endswith(".csv"):
+        filename = f"{filename}.csv"
+
+    invalid_chars = set('/\\:*?"<>|')
+    if any(char in invalid_chars for char in filename):
+        return None, "Result filename contains invalid characters"
+
+    if filename in {".csv", "..csv"}:
+        return None, "Result filename is invalid"
+
+    return filename, None
+
+
 class InputScreen(Screen):
     """Screen for entering aptamer sequence and target molecule."""
 
@@ -63,6 +87,12 @@ class InputScreen(Screen):
                 placeholder="e.g. theophylline or CN1C=NC2=C1...",
                 id="smiles-input",
             )
+            yield Label("Result filename:")
+            yield Input(
+                value=_default_result_filename(),
+                placeholder="e.g. 茶碱结果.csv",
+                id="result-filename-input",
+            )
             yield Label("", id="error")
             with Container(classes="button-row"):
                 yield Button("Resolve & Continue", variant="primary", id="continue-btn")
@@ -74,11 +104,15 @@ class InputScreen(Screen):
 
         seq_input = self.query_one("#seq-input", Input)
         smi_input = self.query_one("#smiles-input", Input)
+        filename_input = self.query_one("#result-filename-input", Input)
         error_label = self.query_one("#error", Label)
         status_label = self.query_one("#status", Label)
 
         sequence = seq_input.value.strip().upper()
         target = smi_input.value.strip()
+        result_filename, filename_error = _normalize_result_filename(
+            filename_input.value
+        )
 
         # Validate sequence
         if not sequence:
@@ -89,6 +123,9 @@ class InputScreen(Screen):
             error_label.update(
                 f"Invalid bases: {set(c for c in sequence if c not in valid_bases)}"
             )
+            return
+        if filename_error is not None:
+            error_label.update(filename_error)
             return
 
         error_label.update("")
@@ -111,6 +148,7 @@ class InputScreen(Screen):
         app.sequence = rna_to_dna(sequence)
         app.smiles = smiles
         app.resolved_name = info
+        app.result_filename = result_filename or _default_result_filename()
 
         # Load predictor lazily
         if app.predictor is None:

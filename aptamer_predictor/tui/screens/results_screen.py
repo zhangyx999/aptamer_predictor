@@ -43,15 +43,16 @@ class ResultsScreen(Screen):
 
     def on_mount(self) -> None:
         table = self.query_one("#results-table", DataTable)
-        table.add_columns("Rank", "Sequence", "Mutations", "Prob", "Label")
+        table.add_columns("Rank", "Sequence", "Prob")
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._csv_filename = f"{ts}.csv"
+        requested_filename = getattr(self.app, "result_filename", "").strip()
+        self._csv_filename = requested_filename or f"{ts}.csv"
         self._csv_file = open(self._csv_filename, "w", newline="")
         self._csv_writer = csv.writer(self._csv_file)
         self._csv_writer.writerow([
-            "rank", "sequence", "mutations",
-            "mean_probability", "ensemble_label",
+            "sequence",
+            "mean_probability",
         ])
         self._csv_file.flush()
 
@@ -77,17 +78,14 @@ class ResultsScreen(Screen):
 
         total_mutations = 4 ** len(sites)
         batch_size = max(50, total_mutations // 200)
-        csv_count = [0]
 
         def on_result(result: dict) -> None:
             with self._csv_lock:
-                csv_count[0] += 1
+                if self._csv_writer is None or self._csv_file is None:
+                    return
                 self._csv_writer.writerow([
-                    csv_count[0],
                     result["sequence"],
-                    result["mutations"],
                     result["mean_probability"],
-                    result["ensemble_label"],
                 ])
                 self._csv_file.flush()
 
@@ -100,7 +98,7 @@ class ResultsScreen(Screen):
         )
 
         try:
-            results = predictor.predict_mutation_batch(
+            predictor.predict_mutation_batch(
                 sequence,
                 smiles,
                 sites,
@@ -108,6 +106,7 @@ class ResultsScreen(Screen):
                 progress_callback=on_progress,
                 should_cancel=lambda: self._should_cancel(worker),
                 result_callback=on_result,
+                collect_results=False,
             )
         except PredictionCancelled:
             self.app.call_from_thread(self._handle_prediction_cancelled)
@@ -115,7 +114,10 @@ class ResultsScreen(Screen):
         except Exception as exc:
             self.app.call_from_thread(self._show_error, str(exc))
             return
+        finally:
+            self._close_csv()
 
+        results = self._load_results_from_csv()
         self.app.call_from_thread(self._show_results, results)
 
     def _should_cancel(self, worker: Worker | None) -> bool:
@@ -157,6 +159,24 @@ class ResultsScreen(Screen):
         bar.update(progress=pct)
         self._set_label(f"{done:,} / {total:,} ({pct:.1f}%) → {self._csv_filename}")
 
+    def _load_results_from_csv(self) -> list[dict]:
+        if not self._csv_filename:
+            return []
+
+        results: list[dict] = []
+        with open(self._csv_filename, newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                results.append(
+                    {
+                        "sequence": row["sequence"],
+                        "mean_probability": float(row["mean_probability"]),
+                    }
+                )
+
+        results.sort(key=lambda r: r["mean_probability"], reverse=True)
+        return results
+
     def _show_results(self, results: list[dict]) -> None:
         if self._cancel_event.is_set():
             self._handle_prediction_cancelled()
@@ -176,9 +196,7 @@ class ResultsScreen(Screen):
             table.add_row(
                 str(rank),
                 seq_short,
-                result["mutations"],
                 f"{result['mean_probability']:.4f}",
-                "Bind",
             )
 
         label.update(
@@ -222,7 +240,6 @@ class ResultsScreen(Screen):
 
     def on_unmount(self) -> None:
         self._is_unmounted = True
-        self._close_csv()
         if not self._prediction_done:
             self._cancel_event.set()
             worker = self._prediction_worker

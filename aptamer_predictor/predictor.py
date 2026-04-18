@@ -328,10 +328,12 @@ class EnsemblePredictor:
         sites: list[int],
         *,
         batch_size: int = 2000,
+        sub_batch_size: Optional[int] = None,
         progress_callback=None,
         should_cancel: Optional[Callable[[], bool]] = None,
         result_callback: Optional[Callable[[dict], None]] = None,
-    ) -> list[dict]:
+        collect_results: bool = True,
+    ) -> Optional[list[dict]]:
         """Enumerate all mutants at selected sites, batch-predict.
 
         Collects **only** candidates where all 9 models predict binding
@@ -349,17 +351,22 @@ class EnsemblePredictor:
             smiles: Target molecule SMILES.
             sites: List of 0-indexed positions to mutate.
             batch_size: Number of candidates per inference chunk.
+            sub_batch_size: Internal vectorized processing chunk size.
             progress_callback: Optional callable(done, total, info_dict).
             should_cancel: Optional callable returning True when the
                 enumeration should abort immediately.
+            result_callback: Optional callable invoked for each positive hit.
+            collect_results: When False, stream positives through
+                result_callback without accumulating them in memory.
 
         Returns:
             List of positive-result dicts sorted by mean probability
-            (descending).
+            (descending), or None when collect_results is False.
         """
         from itertools import product
 
         from aptamer_predictor.features import (
+            _ENCODE_TABLE,
             MER_K_MAP,
             build_feature_matrix,
             molecular_descriptors,
@@ -368,7 +375,17 @@ class EnsemblePredictor:
 
         seq = rna_to_dna(base_sequence).upper()
         seq_list = list(seq)
+        seq_bytes = np.frombuffer(seq.encode("ascii"), dtype=np.uint8)
         bases = ["A", "T", "G", "C"]
+        base_bytes = np.frombuffer(b"ATGC", dtype=np.uint8)
+        sites_arr = np.array(sites, dtype=np.intp)
+        if np.any(sites_arr < 0) or np.any(sites_arr >= len(seq)):
+            raise ValueError("Mutation site index out of range")
+
+        batch_size = max(1, int(batch_size))
+        if sub_batch_size is None:
+            sub_batch_size = min(65536, batch_size)
+        sub_batch_size = max(1, int(sub_batch_size))
         total = 4 ** len(sites)
 
         def _check_cancelled() -> None:
@@ -410,18 +427,18 @@ class EnsemblePredictor:
         ordered_models = [(m, mer, fn, kl) for _, m, mer, fn, kl in scored]
 
         # --- Main enumeration with early-exit filtering ---
-        positives: list[dict] = []
+        positives: Optional[list[dict]] = [] if collect_results else None
         done = 0
+        progress_mark = 0
 
-        def _flush_chunk(candidates):
-            nonlocal done
+        def _flush_chunk(mutant_bytes: np.ndarray) -> None:
+            nonlocal done, progress_mark
             _check_cancelled()
-            if not candidates:
+            if mutant_bytes.size == 0:
                 return
 
-            cand_seqs = [c[0] for c in candidates]
-            cand_muts = [c[1] for c in candidates]
-            B = len(candidates)
+            encoded_mutants = _ENCODE_TABLE[mutant_bytes]
+            B = encoded_mutants.shape[0]
 
             # Early-exit sequential filtering
             surviving = np.arange(B)
@@ -433,8 +450,7 @@ class EnsemblePredictor:
                 if len(surviving) == 0:
                     break
 
-                surv_seqs = [cand_seqs[i] for i in surviving]
-                X = build_feature_matrix(surv_seqs, desc, k_list)
+                X = build_feature_matrix(encoded_mutants[surviving], desc, k_list)
                 preds, probs = self._predict_batch(model, X)
 
                 # Store probs for all surviving candidates
@@ -448,48 +464,42 @@ class EnsemblePredictor:
             for idx in surviving:
                 mean_prob = float(np.mean(all_model_probs[idx]))
                 result = {
-                    "sequence": cand_seqs[idx],
-                    "mutations": cand_muts[idx],
+                    "sequence": mutant_bytes[idx].tobytes().decode("ascii"),
                     "mean_probability": round(mean_prob, 6),
                     "ensemble_label": 1,
                 }
-                positives.append(result)
                 if result_callback:
                     result_callback(result)
+                if positives is not None:
+                    positives.append(result)
 
             done += B
-            if progress_callback:
+            progress_mark += B
+            if progress_callback and (progress_mark >= batch_size or done == total):
                 _check_cancelled()
                 progress_callback(done, total, {})
+                progress_mark = 0
 
-        chunk = []
-        for combo in product(bases, repeat=len(sites)):
-            _check_cancelled()
-            mutant = seq_list.copy()
-            mutations = []
-            valid = True
-            for pos, new_base in zip(sites, combo):
-                if pos < 0 or pos >= len(mutant):
-                    valid = False
-                    break
-                old = mutant[pos]
-                if new_base == old:
-                    continue
-                mutant[pos] = new_base
-                mutations.append(f"{pos}:{old}>{new_base}")
+        if len(sites) == 0:
+            _flush_chunk(seq_bytes.reshape(1, -1))
+        else:
+            for start in range(0, total, sub_batch_size):
+                _check_cancelled()
+                stop = min(start + sub_batch_size, total)
+                batch_len = stop - start
+                digits = np.empty((batch_len, len(sites)), dtype=np.int8)
+                values = np.arange(start, stop, dtype=np.int64)
 
-            if not valid:
-                continue
+                for pos in range(len(sites) - 1, -1, -1):
+                    digits[:, pos] = values % 4
+                    values //= 4
 
-            mut_seq = "".join(mutant)
-            mut_desc_str = ";".join(mutations) if mutations else "wild-type"
-            chunk.append((mut_seq, mut_desc_str))
+                mutant_bytes = np.tile(seq_bytes, (batch_len, 1))
+                mutant_bytes[:, sites_arr] = base_bytes[digits]
+                _flush_chunk(mutant_bytes)
 
-            if len(chunk) >= batch_size:
-                _flush_chunk(chunk)
-                chunk = []
-
-        _flush_chunk(chunk)
+        if positives is None:
+            return None
 
         positives.sort(key=lambda r: r["mean_probability"], reverse=True)
         return positives

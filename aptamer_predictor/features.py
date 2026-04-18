@@ -144,6 +144,17 @@ def build_feature_vector_fast(
 # ---------------------------------------------------------------------------
 
 _BASE_MAP = {"A": 0, "T": 1, "G": 2, "C": 3}
+_ENCODE_TABLE = np.zeros(256, dtype=np.int32)
+_ENCODE_TABLE[ord("A")] = 0
+_ENCODE_TABLE[ord("a")] = 0
+_ENCODE_TABLE[ord("T")] = 1
+_ENCODE_TABLE[ord("t")] = 1
+_ENCODE_TABLE[ord("U")] = 1
+_ENCODE_TABLE[ord("u")] = 1
+_ENCODE_TABLE[ord("G")] = 2
+_ENCODE_TABLE[ord("g")] = 2
+_ENCODE_TABLE[ord("C")] = 3
+_ENCODE_TABLE[ord("c")] = 3
 
 
 def _encode_sequence(sequence: str) -> np.ndarray:
@@ -151,8 +162,18 @@ def _encode_sequence(sequence: str) -> np.ndarray:
     return np.array([_BASE_MAP.get(c, 0) for c in sequence], dtype=np.int32)
 
 
+def _encode_sequences(sequences: list[str]) -> np.ndarray:
+    if not sequences:
+        return np.empty((0, 0), dtype=np.int32)
+
+    length = len(sequences[0])
+    joined = "".join(sequences).encode("ascii")
+    encoded = _ENCODE_TABLE[np.frombuffer(joined, dtype=np.uint8)]
+    return encoded.reshape(len(sequences), length)
+
+
 def build_feature_matrix(
-    sequences: list[str],
+    sequences: list[str] | np.ndarray,
     precomputed_desc: list[float],
     k_list: list[int],
 ) -> np.ndarray:
@@ -163,14 +184,27 @@ def build_feature_matrix(
 
     Returns ndarray of shape ``(n_sequences, total_feature_dim)`` with NaN→0.
     """
-    if not sequences:
-        return np.empty((0, 0))
+    if isinstance(sequences, np.ndarray):
+        if sequences.size == 0:
+            return np.empty((0, 0))
+        if sequences.ndim != 2:
+            raise ValueError("Encoded sequence array must be 2-D")
 
-    N = len(sequences)
+        if np.issubdtype(sequences.dtype, np.integer) and (
+            sequences.size == 0
+            or (int(np.min(sequences)) >= 0 and int(np.max(sequences)) <= 3)
+        ):
+            encoded = sequences.astype(np.int32, copy=False)
+        else:
+            encoded = _ENCODE_TABLE[sequences.astype(np.uint8, copy=False)]
+    else:
+        if not sequences:
+            return np.empty((0, 0))
+        encoded = _encode_sequences(sequences)
+
+    N = encoded.shape[0]
     desc_arr = np.array(precomputed_desc, dtype=np.float64)
 
-    # Encode all sequences into a single 2-D int array  (N, L)
-    encoded = np.array([_encode_sequence(s) for s in sequences], dtype=np.int32)
     L = encoded.shape[1]
 
     all_kmer = []

@@ -26,6 +26,7 @@ class PredictorApp(App):
         self.sequence: str = ""
         self.smiles: str = ""
         self.resolved_name: str = ""
+        self.result_filename: str = ""
         self.selected_sites: list[int] = []
 
     def on_mount(self) -> None:
