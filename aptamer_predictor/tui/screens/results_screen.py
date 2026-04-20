@@ -60,10 +60,16 @@ class ResultsScreen(Screen):
         self._csv_filename = requested_filename or f"{ts}.csv"
         self._csv_file = open(self._csv_filename, "w", newline="")
         self._csv_writer = csv.writer(self._csv_file)
-        self._csv_writer.writerow([
-            "sequence",
-            "mean_probability",
-        ])
+        # Build CSV header: sequence + per-model probabilities + mean_probability
+        app = self.app
+        assert app.predictor is not None
+        model_names = [fname for (_, _, fname) in app.predictor.models]
+        self._model_names = model_names
+        self._csv_writer.writerow(
+            ["sequence"]
+            + [f"prob_{name}" for name in model_names]
+            + ["mean_probability"]
+        )
         self._csv_file.flush()
 
         app = self.app
@@ -98,9 +104,11 @@ class ResultsScreen(Screen):
             with self._csv_lock:
                 if self._csv_writer is None or self._csv_file is None:
                     return
+                model_probs = result.get("model_probabilities", [])
                 self._csv_writer.writerow([
                     result["sequence"],
-                    result["mean_probability"],
+                    *[f"{p:.6f}" for p in model_probs],
+                    f"{result['mean_probability']:.6f}",
                 ])
                 self._csv_file.flush()
 

@@ -469,11 +469,13 @@ class EnsemblePredictor:
 
             # Final survivors are the positives
             for idx in surviving:
-                mean_prob = float(np.mean(all_model_probs[idx]))
+                probs = all_model_probs[idx]
+                mean_prob = float(np.mean(probs))
                 result = {
                     "sequence": mutant_bytes[idx].tobytes().decode("ascii"),
                     "mean_probability": round(mean_prob, 6),
                     "ensemble_label": 1,
+                    "model_probabilities": [round(float(p), 6) for p in probs],
                 }
                 if result_callback:
                     result_callback(result)
